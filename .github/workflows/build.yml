@@ -1,0 +1,161 @@
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v0.3.0)'
+        required: true
+      sha:
+        description: 'Commit SHA to build'
+        required: true
+
+concurrency:
+  group: build
+  cancel-in-progress: true
+
+jobs:
+  build-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: vLeapGroup/city-digital
+          token: ${{ secrets.JOAI_GITHUB_TOKEN }}
+          ref: ${{ inputs.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app
+        run: npm run build
+
+  publish-ios:
+    needs: build-web
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: vLeapGroup/city-digital
+          token: ${{ secrets.JOAI_GITHUB_TOKEN }}
+          ref: ${{ inputs.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.0'
+          bundler-cache: true
+          working-directory: ios
+
+      - name: Install Fastlane
+        run: |
+          cd ios
+          bundle install
+
+      - name: Sync Capacitor
+        run: npx cap sync ios
+
+      - name: Write App Store Connect API key
+        run: |
+          mkdir -p ~/private_keys
+          echo "${{ secrets.FASTLANE_APPLE_API_KEY }}" > ~/private_keys/AuthKey_${{ secrets.FASTLANE_APPLE_API_KEY_ID }}.p8
+
+      - name: Configure git for match
+        run: |
+          git config --global credential.helper store
+          echo "https://x-access-token:${{ secrets.JOAI_GITHUB_TOKEN }}@github.com" > ~/.git-credentials
+
+      - name: Run Fastlane beta
+        env:
+          FASTLANE_APPLE_ID: ${{ secrets.FASTLANE_APPLE_ID }}
+          FASTLANE_TEAM_ID: ${{ secrets.FASTLANE_TEAM_ID }}
+          FASTLANE_APPLE_API_KEY_ID: ${{ secrets.FASTLANE_APPLE_API_KEY_ID }}
+          FASTLANE_APPLE_API_ISSUER_ID: ${{ secrets.FASTLANE_APPLE_API_ISSUER_ID }}
+          FASTLANE_APPLE_API_KEY_PATH: ~/private_keys/AuthKey_${{ secrets.FASTLANE_APPLE_API_KEY_ID }}.p8
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_READONLY: false
+          CI: true
+        run: |
+          cd ios
+          bundle exec fastlane beta
+
+  publish-android:
+    needs: build-web
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: vLeapGroup/city-digital
+          token: ${{ secrets.JOAI_GITHUB_TOKEN }}
+          ref: ${{ inputs.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.0'
+          bundler-cache: true
+          working-directory: android
+
+      - name: Install Fastlane
+        run: |
+          cd android
+          bundle install
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Decode Android keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > ~/release.keystore
+          echo "ANDROID_RELEASE_STORE_FILE=$HOME/release.keystore" >> "$GITHUB_ENV"
+
+      - name: Decode Google Play service account key
+        run: |
+          echo "${{ secrets.GOOGLE_PLAY_JSON_KEY_BASE64 }}" | base64 --decode > ~/google-play-key.json
+          echo "GOOGLE_PLAY_JSON_KEY_FILE=$HOME/google-play-key.json" >> "$GITHUB_ENV"
+
+      - name: Run Fastlane beta
+        env:
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          cd android
+          bundle exec fastlane beta
