@@ -55,6 +55,42 @@ jobs:
           ssh-keyscan github.com >> ~/.ssh/known_hosts
           printf 'Host github.com\n  IdentityFile ~/.ssh/match_key\n  IdentitiesOnly yes\n' >> ~/.ssh/config
 
+      - name: Check App Groups status (diagnostic)
+        env:
+          FASTLANE_APPLE_API_KEY_ID: ${{ secrets.FASTLANE_APPLE_API_KEY_ID }}
+          FASTLANE_APPLE_API_ISSUER_ID: ${{ secrets.FASTLANE_APPLE_API_ISSUER_ID }}
+          FASTLANE_APPLE_API_KEY_PATH: ~/private_keys/AuthKey_${{ secrets.FASTLANE_APPLE_API_KEY_ID }}.p8
+          CITY: ${{ inputs.city }}
+        run: |
+          cd ios
+          ruby -e '
+            require "fastlane"
+            Spaceship::ConnectAPI.login(
+              key_id: ENV["FASTLANE_APPLE_API_KEY_ID"],
+              issuer_id: ENV["FASTLANE_APPLE_API_ISSUER_ID"],
+              key_filepath: ENV["FASTLANE_APPLE_API_KEY_PATH"],
+            )
+            require "json"
+            cities = JSON.parse(File.read("lib/cities.json"))
+            city = cities[ENV["CITY"]] || cities["hollabrunn"]
+            bid = city["nativeBundleId"]
+            grp = city["nativeAppGroup"]
+            begin
+              groups = Spaceship::ConnectAPI.provisioning_request_client.get("v1/appGroups").body
+              ids = groups["data"]&.map { |g| g.dig("attributes", "identifier") }
+              puts "EXISTING_APP_GROUPS: #{(ids || []).inspect}"
+            rescue => ex
+              puts "ERR_LIST_GROUPS: #{ex.message[0..200]}"
+            end
+            begin
+              b = Spaceship::ConnectAPI::BundleId.find(bid, includes: "bundleIdCapabilities")
+              caps = (b&.bundle_id_capabilities || []).map { |c| c.raw_data.dig("attributes", "capabilityType") }
+              puts "BUNDLE_ID_CAPS for #{bid}: #{caps.inspect}"
+            rescue => ex
+              puts "ERR_BUNDLE_CAPS: #{ex.message[0..200]}"
+            end
+          '
+
       - name: Run Fastlane provision
         env:
           FASTLANE_APPLE_ID: ${{ secrets.FASTLANE_APPLE_ID }}
