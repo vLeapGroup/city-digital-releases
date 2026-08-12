@@ -63,7 +63,7 @@ jobs:
           CITY: ${{ inputs.city }}
         run: |
           cd ios
-          ruby -e '
+          cat > /tmp/check_groups.rb <<'RUBY'
             require "fastlane"
             Spaceship::ConnectAPI.login(
               key_id: ENV["FASTLANE_APPLE_API_KEY_ID"],
@@ -74,7 +74,6 @@ jobs:
             cities = JSON.parse(File.read("lib/cities.json"))
             city = cities[ENV["CITY"]] || cities["hollabrunn"]
             bid = city["nativeBundleId"]
-            grp = city["nativeAppGroup"]
             begin
               groups = Spaceship::ConnectAPI.provisioning_request_client.get("v1/appGroups").body
               ids = groups["data"]&.map { |g| g.dig("attributes", "identifier") }
@@ -89,7 +88,8 @@ jobs:
             rescue => ex
               puts "ERR_BUNDLE_CAPS: #{ex.message[0..200]}"
             end
-          '
+          RUBY
+          bundle exec ruby /tmp/check_groups.rb
 
       - name: Run Fastlane provision
         env:
