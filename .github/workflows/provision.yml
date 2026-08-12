@@ -68,7 +68,7 @@ jobs:
             Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.create(
               key_id: ENV["FASTLANE_APPLE_API_KEY_ID"],
               issuer_id: ENV["FASTLANE_APPLE_API_ISSUER_ID"],
-              key_filepath: File.expand_path(ENV["FASTLANE_APPLE_API_KEY_PATH"]),
+              filepath: File.expand_path(ENV["FASTLANE_APPLE_API_KEY_PATH"]),
             )
             require "json"
             cities = JSON.parse(File.read("lib/cities.json"))
