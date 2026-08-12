@@ -58,6 +58,7 @@ jobs:
       - name: Run Fastlane provision
         env:
           FASTLANE_APPLE_ID: ${{ secrets.FASTLANE_APPLE_ID }}
+          FASTLANE_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.FASTLANE_APPLE_APP_SPECIFIC_PASSWORD }}
           FASTLANE_TEAM_ID: ${{ secrets.FASTLANE_TEAM_ID }}
           FASTLANE_APPLE_API_KEY_ID: ${{ secrets.FASTLANE_APPLE_API_KEY_ID }}
           FASTLANE_APPLE_API_ISSUER_ID: ${{ secrets.FASTLANE_APPLE_API_ISSUER_ID }}
