@@ -64,6 +64,7 @@ jobs:
       - name: Build web app
         env:
           NEXT_PUBLIC_CITY: ${{ inputs.city }}
+          EXPORT: 'true'
         run: npm run build
 
       - name: Setup Ruby
@@ -137,6 +138,7 @@ jobs:
       - name: Build web app
         env:
           NEXT_PUBLIC_CITY: ${{ inputs.city }}
+          EXPORT: 'true'
         run: npm run build
 
       - name: Setup Java
