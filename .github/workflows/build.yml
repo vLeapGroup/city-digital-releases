@@ -62,7 +62,9 @@ jobs:
         run: npm install
 
       - name: Bump native build version
-        run: node sync-version.js
+        run: |
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));const v='${{ inputs.version }}'.replace(/^v/,'');p.version=v;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          node sync-version.js
 
       - name: Build web app
         env:
@@ -139,7 +141,9 @@ jobs:
         run: npm install
 
       - name: Bump native build version
-        run: node sync-version.js
+        run: |
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));const v='${{ inputs.version }}'.replace(/^v/,'');p.version=v;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          node sync-version.js
 
       - name: Build web app
         env:
