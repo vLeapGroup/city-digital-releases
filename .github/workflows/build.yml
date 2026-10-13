@@ -14,6 +14,9 @@ on:
         required: true
         default: 'hollabrunn'
 
+permissions:
+  contents: write
+
 concurrency:
   group: build
   cancel-in-progress: true
@@ -194,3 +197,16 @@ jobs:
         run: |
           cd android
           bundle exec fastlane beta
+
+      - name: Attach Android bundle to GitHub release
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.city }}-${{ inputs.version }}
+          AAB: android/app/build/outputs/bundle/release/app-release.aab
+        run: |
+          [ -f "$AAB" ] || exit 0
+          cp "$AAB" "${{ inputs.city }}-${{ inputs.version }}.aab"
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "$TAG" --notes "city-digital ${{ inputs.sha }}"
+          gh release upload "$TAG" "${{ inputs.city }}-${{ inputs.version }}.aab" -R "$GITHUB_REPOSITORY" --clobber
