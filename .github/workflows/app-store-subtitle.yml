@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       subtitle:
-        description: 'App Store subtitle (max 30 characters)'
+        description: 'German App Store subtitle (max 30 characters)'
         required: true
         default: 'Lokale Betriebe, Events & News'
+      subtitle_en:
+        description: 'English App Store subtitle (max 30 characters)'
+        required: true
+        default: 'Local shops, events & news'
       app_store_id:
         description: 'Numeric App Store ID'
         required: true
@@ -31,6 +35,7 @@ jobs:
           FASTLANE_APPLE_API_ISSUER_ID: ${{ secrets.FASTLANE_APPLE_API_ISSUER_ID }}
           APP_STORE_ID: ${{ inputs.app_store_id }}
           SUBTITLE: ${{ inputs.subtitle }}
+          SUBTITLE_EN: ${{ inputs.subtitle_en }}
           VERSION: ${{ inputs.version }}
         run: |
           node <<'EOF'
@@ -39,6 +44,8 @@ jobs:
           const ISSUER_ID = process.env.FASTLANE_APPLE_API_ISSUER_ID
           const APP_ID = process.env.APP_STORE_ID || '6789114061'
           const SUBTITLE = (process.env.SUBTITLE || '').trim()
+          const SUBTITLE_EN = (process.env.SUBTITLE_EN || 'Local shops, events & news').trim()
+          const textFor = (locale) => (String(locale).toLowerCase().startsWith('en') ? SUBTITLE_EN : SUBTITLE)
           const EDITABLE = new Set([
             'PREPARE_FOR_SUBMISSION',
             'DEVELOPER_REJECTED',
@@ -125,11 +132,13 @@ jobs:
             console.log(`appInfo ${info.id} state=${state}`)
             if (!EDITABLE.has(state)) continue
             const locRes = await api('GET', `/v1/appInfos/${info.id}/appInfoLocalizations`)
-            for (const loc of locRes.data || []) {
+            const locales = locRes.data || []
+            for (const loc of locales) {
               const locale = loc.attributes?.locale
+              const want = textFor(locale)
               const current = loc.attributes?.subtitle ?? ''
               console.log(`  ${locale} name=${JSON.stringify(loc.attributes?.name)} subtitle=${JSON.stringify(current)}`)
-              if (current === SUBTITLE) {
+              if (current === want) {
                 console.log(`  ${locale}: already set`)
                 patched += 1
                 continue
@@ -138,10 +147,23 @@ jobs:
                 data: {
                   type: 'appInfoLocalizations',
                   id: loc.id,
-                  attributes: { subtitle: SUBTITLE },
+                  attributes: { subtitle: want },
                 },
               })
-              console.log(`  ${locale}: "${current}" → "${SUBTITLE}"`)
+              console.log(`  ${locale}: "${current}" → "${want}"`)
+              patched += 1
+            }
+            const hasEn = locales.some((loc) => String(loc.attributes?.locale).toLowerCase().startsWith('en'))
+            if (!hasEn) {
+              const name = locales[0]?.attributes?.name || 'Hollabrunn Digital'
+              await api('POST', '/v1/appInfoLocalizations', {
+                data: {
+                  type: 'appInfoLocalizations',
+                  attributes: { locale: 'en-US', name, subtitle: SUBTITLE_EN },
+                  relationships: { appInfo: { data: { type: 'appInfos', id: info.id } } },
+                },
+              })
+              console.log(`  en-US: created "${SUBTITLE_EN}"`)
               patched += 1
             }
           }
