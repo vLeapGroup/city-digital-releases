@@ -11,6 +11,10 @@ on:
         description: 'Numeric App Store ID'
         required: true
         default: '6789114061'
+      version:
+        description: 'iOS version to create if none is in Prepare for Submission (empty = bump latest patch)'
+        required: false
+        default: ''
 
 jobs:
   set:
@@ -27,6 +31,7 @@ jobs:
           FASTLANE_APPLE_API_ISSUER_ID: ${{ secrets.FASTLANE_APPLE_API_ISSUER_ID }}
           APP_STORE_ID: ${{ inputs.app_store_id }}
           SUBTITLE: ${{ inputs.subtitle }}
+          VERSION: ${{ inputs.version }}
         run: |
           node <<'EOF'
           import { createPrivateKey, sign } from 'node:crypto'
@@ -40,9 +45,6 @@ jobs:
             'REJECTED',
             'METADATA_REJECTED',
             'INVALID_BINARY',
-            'WAITING_FOR_REVIEW',
-            'IN_REVIEW',
-            'PENDING_DEVELOPER_RELEASE',
           ])
           if (!KEY_ID || !ISSUER_ID || !process.env.FASTLANE_APPLE_API_KEY) {
             console.error('missing Apple API key env')
@@ -78,57 +80,73 @@ jobs:
             return json
           }
 
-          const listed = await api('GET', `/v1/apps/${APP_ID}/appInfos`)
-          const infos = listed.data || []
-          let patched = 0
-          for (const info of infos) {
-            const state = info.attributes?.appStoreState || info.attributes?.state || '?'
-            console.log(`appInfo ${info.id} state=${state}`)
-            if (!EDITABLE.has(state) && state !== '?') {
-              console.log(`skip locked appInfo (${state})`)
-              continue
+          const versions = await api('GET', `/v1/apps/${APP_ID}/appStoreVersions?filter[platform]=IOS&limit=25`)
+          const existing = versions.data || []
+          for (const v of existing) {
+            console.log(`version ${v.attributes?.versionString} state=${v.attributes?.appStoreState}`)
+          }
+          const draft = existing.find((v) => EDITABLE.has(v.attributes?.appStoreState))
+          if (!draft) {
+            const taken = new Set(existing.map((v) => v.attributes?.versionString))
+            let next = (process.env.VERSION || '').trim()
+            if (!next || taken.has(next)) {
+              const latest = existing
+                .map((v) => v.attributes?.versionString)
+                .filter(Boolean)
+                .sort((a, b) => {
+                  const pa = a.split('.').map(Number)
+                  const pb = b.split('.').map(Number)
+                  return (pa[0] - pb[0]) || (pa[1] - pb[1]) || (pa[2] - pb[2])
+                })
+                .at(-1) || '1.0.0'
+              const parts = latest.split('.').map((n) => parseInt(n, 10) || 0)
+              while (parts.length < 3) parts.push(0)
+              parts[2] += 1
+              next = parts.join('.')
+              while (taken.has(next)) {
+                parts[2] += 1
+                next = parts.join('.')
+              }
             }
+            console.log(`creating iOS version ${next}`)
+            await api('POST', '/v1/appStoreVersions', {
+              data: {
+                type: 'appStoreVersions',
+                attributes: { platform: 'IOS', versionString: next },
+                relationships: { app: { data: { type: 'apps', id: APP_ID } } },
+              },
+            })
+          }
+
+          const listed = await api('GET', `/v1/apps/${APP_ID}/appInfos`)
+          let patched = 0
+          for (const info of listed.data || []) {
+            const state = info.attributes?.appStoreState || '?'
+            console.log(`appInfo ${info.id} state=${state}`)
+            if (!EDITABLE.has(state)) continue
             const locRes = await api('GET', `/v1/appInfos/${info.id}/appInfoLocalizations`)
             for (const loc of locRes.data || []) {
               const locale = loc.attributes?.locale
               const current = loc.attributes?.subtitle ?? ''
-              console.log(`  ${locale} subtitle=${JSON.stringify(current)} name=${JSON.stringify(loc.attributes?.name)}`)
+              console.log(`  ${locale} name=${JSON.stringify(loc.attributes?.name)} subtitle=${JSON.stringify(current)}`)
               if (current === SUBTITLE) {
                 console.log(`  ${locale}: already set`)
                 patched += 1
                 continue
               }
-              const res = await fetch(`https://api.appstoreconnect.apple.com/v1/appInfoLocalizations/${loc.id}`, {
-                method: 'PATCH',
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                  Accept: 'application/json',
-                  'Content-Type': 'application/json',
+              await api('PATCH', `/v1/appInfoLocalizations/${loc.id}`, {
+                data: {
+                  type: 'appInfoLocalizations',
+                  id: loc.id,
+                  attributes: { subtitle: SUBTITLE },
                 },
-                body: JSON.stringify({
-                  data: {
-                    type: 'appInfoLocalizations',
-                    id: loc.id,
-                    attributes: { subtitle: SUBTITLE },
-                  },
-                }),
               })
-              const json = await res.json().catch(() => ({}))
-              if (!res.ok) {
-                const code = json.errors?.[0]?.code || ''
-                if (code.includes('INVALID_STATE')) {
-                  console.log(`  ${locale}: locked (${state})`)
-                  continue
-                }
-                console.error(`PATCH localization ${res.status}`, JSON.stringify(json.errors || json))
-                process.exit(1)
-              }
               console.log(`  ${locale}: "${current}" → "${SUBTITLE}"`)
               patched += 1
             }
           }
           if (!patched) {
-            console.error('no editable App Information localization; need a version in Prepare for Submission')
+            console.error('subtitle was not written to an editable localization')
             process.exit(1)
           }
           EOF
