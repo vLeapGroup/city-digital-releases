@@ -34,6 +34,16 @@ jobs:
           const ISSUER_ID = process.env.FASTLANE_APPLE_API_ISSUER_ID
           const APP_ID = process.env.APP_STORE_ID || '6789114061'
           const SUBTITLE = (process.env.SUBTITLE || '').trim()
+          const EDITABLE = new Set([
+            'PREPARE_FOR_SUBMISSION',
+            'DEVELOPER_REJECTED',
+            'REJECTED',
+            'METADATA_REJECTED',
+            'INVALID_BINARY',
+            'WAITING_FOR_REVIEW',
+            'IN_REVIEW',
+            'PENDING_DEVELOPER_RELEASE',
+          ])
           if (!KEY_ID || !ISSUER_ID || !process.env.FASTLANE_APPLE_API_KEY) {
             console.error('missing Apple API key env')
             process.exit(1)
@@ -68,29 +78,57 @@ jobs:
             return json
           }
 
-          const app = await api('GET', `/v1/apps/${APP_ID}?include=appInfos`)
-          let infos = (app.included || []).filter((r) => r.type === 'appInfos')
-          if (!infos.length) {
-            const listed = await api('GET', `/v1/apps/${APP_ID}/appInfos`)
-            infos = listed.data || []
-          }
+          const listed = await api('GET', `/v1/apps/${APP_ID}/appInfos`)
+          const infos = listed.data || []
+          let patched = 0
           for (const info of infos) {
+            const state = info.attributes?.appStoreState || info.attributes?.state || '?'
+            console.log(`appInfo ${info.id} state=${state}`)
+            if (!EDITABLE.has(state) && state !== '?') {
+              console.log(`skip locked appInfo (${state})`)
+              continue
+            }
             const locRes = await api('GET', `/v1/appInfos/${info.id}/appInfoLocalizations`)
             for (const loc of locRes.data || []) {
               const locale = loc.attributes?.locale
               const current = loc.attributes?.subtitle ?? ''
+              console.log(`  ${locale} subtitle=${JSON.stringify(current)} name=${JSON.stringify(loc.attributes?.name)}`)
               if (current === SUBTITLE) {
-                console.log(`${locale}: already set`)
+                console.log(`  ${locale}: already set`)
+                patched += 1
                 continue
               }
-              await api('PATCH', `/v1/appInfoLocalizations/${loc.id}`, {
-                data: {
-                  type: 'appInfoLocalizations',
-                  id: loc.id,
-                  attributes: { subtitle: SUBTITLE },
+              const res = await fetch(`https://api.appstoreconnect.apple.com/v1/appInfoLocalizations/${loc.id}`, {
+                method: 'PATCH',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  Accept: 'application/json',
+                  'Content-Type': 'application/json',
                 },
+                body: JSON.stringify({
+                  data: {
+                    type: 'appInfoLocalizations',
+                    id: loc.id,
+                    attributes: { subtitle: SUBTITLE },
+                  },
+                }),
               })
-              console.log(`${locale}: "${current}" → "${SUBTITLE}"`)
+              const json = await res.json().catch(() => ({}))
+              if (!res.ok) {
+                const code = json.errors?.[0]?.code || ''
+                if (code.includes('INVALID_STATE')) {
+                  console.log(`  ${locale}: locked (${state})`)
+                  continue
+                }
+                console.error(`PATCH localization ${res.status}`, JSON.stringify(json.errors || json))
+                process.exit(1)
+              }
+              console.log(`  ${locale}: "${current}" → "${SUBTITLE}"`)
+              patched += 1
             }
+          }
+          if (!patched) {
+            console.error('no editable App Information localization; need a version in Prepare for Submission')
+            process.exit(1)
           }
           EOF
