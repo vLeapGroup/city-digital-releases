@@ -1,0 +1,96 @@
+name: app-store-subtitle
+
+on:
+  workflow_dispatch:
+    inputs:
+      subtitle:
+        description: 'App Store subtitle (max 30 characters)'
+        required: true
+        default: 'Lokale Betriebe, Events & News'
+      app_store_id:
+        description: 'Numeric App Store ID'
+        required: true
+        default: '6789114061'
+
+jobs:
+  set:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Set subtitle
+        env:
+          FASTLANE_APPLE_API_KEY: ${{ secrets.FASTLANE_APPLE_API_KEY }}
+          FASTLANE_APPLE_API_KEY_ID: ${{ secrets.FASTLANE_APPLE_API_KEY_ID }}
+          FASTLANE_APPLE_API_ISSUER_ID: ${{ secrets.FASTLANE_APPLE_API_ISSUER_ID }}
+          APP_STORE_ID: ${{ inputs.app_store_id }}
+          SUBTITLE: ${{ inputs.subtitle }}
+        run: |
+          node <<'EOF'
+          import { createPrivateKey, sign } from 'node:crypto'
+          const KEY_ID = process.env.FASTLANE_APPLE_API_KEY_ID
+          const ISSUER_ID = process.env.FASTLANE_APPLE_API_ISSUER_ID
+          const APP_ID = process.env.APP_STORE_ID || '6789114061'
+          const SUBTITLE = (process.env.SUBTITLE || '').trim()
+          if (!KEY_ID || !ISSUER_ID || !process.env.FASTLANE_APPLE_API_KEY) {
+            console.error('missing Apple API key env')
+            process.exit(1)
+          }
+          if ([...SUBTITLE].length > 30) {
+            console.error(`subtitle is ${[...SUBTITLE].length} chars (max 30)`)
+            process.exit(1)
+          }
+          const p8 = process.env.FASTLANE_APPLE_API_KEY.replace(/\\n/g, '\n')
+          const header = Buffer.from(JSON.stringify({ alg: 'ES256', kid: KEY_ID, typ: 'JWT' })).toString('base64url')
+          const now = Math.floor(Date.now() / 1000)
+          const payload = Buffer.from(JSON.stringify({ iss: ISSUER_ID, iat: now, exp: now + 1200, aud: 'appstoreconnect-v1' })).toString('base64url')
+          const data = `${header}.${payload}`
+          const sig = sign('sha256', Buffer.from(data), { key: createPrivateKey(p8), dsaEncoding: 'ieee-p1363' })
+          const token = `${data}.${sig.toString('base64url')}`
+
+          async function api(method, path, body) {
+            const res = await fetch(`https://api.appstoreconnect.apple.com${path}`, {
+              method,
+              headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: 'application/json',
+                ...(body ? { 'Content-Type': 'application/json' } : {}),
+              },
+              body: body ? JSON.stringify(body) : undefined,
+            })
+            const json = await res.json().catch(() => ({}))
+            if (!res.ok) {
+              console.error(`${method} ${path} ${res.status}`, JSON.stringify(json.errors || json))
+              process.exit(1)
+            }
+            return json
+          }
+
+          const app = await api('GET', `/v1/apps/${APP_ID}?include=appInfos`)
+          let infos = (app.included || []).filter((r) => r.type === 'appInfos')
+          if (!infos.length) {
+            const listed = await api('GET', `/v1/apps/${APP_ID}/appInfos`)
+            infos = listed.data || []
+          }
+          for (const info of infos) {
+            const locRes = await api('GET', `/v1/appInfos/${info.id}/appInfoLocalizations`)
+            for (const loc of locRes.data || []) {
+              const locale = loc.attributes?.locale
+              const current = loc.attributes?.subtitle ?? ''
+              if (current === SUBTITLE) {
+                console.log(`${locale}: already set`)
+                continue
+              }
+              await api('PATCH', `/v1/appInfoLocalizations/${loc.id}`, {
+                data: {
+                  type: 'appInfoLocalizations',
+                  id: loc.id,
+                  attributes: { subtitle: SUBTITLE },
+                },
+              })
+              console.log(`${locale}: "${current}" → "${SUBTITLE}"`)
+            }
+          }
+          EOF
