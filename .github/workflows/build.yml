@@ -10,7 +10,7 @@ on:
         description: 'Commit SHA to build'
         required: true
       city:
-        description: 'City id (hollabrunn, sibiu, ...)'
+        description: 'City id(s), space-separated (e.g. "hollabrunn" or "hollabrunn vienna") — one iOS + Android build per city'
         required: true
         default: 'hollabrunn'
 
@@ -18,13 +18,26 @@ permissions:
   contents: write
 
 concurrency:
-  group: build
+  group: build-${{ inputs.city }}
   cancel-in-progress: true
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      cities: ${{ steps.plan.outputs.cities }}
+    steps:
+      - id: plan
+        run: echo "cities=$(jq -cn --arg c "${{ inputs.city }}" '$c | split(" ") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+
   build-web:
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        city: ${{ fromJson(needs.plan.outputs.cities) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,13 +55,17 @@ jobs:
 
       - name: Build web app
         env:
-          NEXT_PUBLIC_CITY: ${{ inputs.city }}
+          NEXT_PUBLIC_CITY: ${{ matrix.city }}
         run: npm run build
 
   publish-ios:
-    needs: build-web
+    needs: [plan, build-web]
     runs-on: macos-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        city: ${{ fromJson(needs.plan.outputs.cities) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,7 +88,7 @@ jobs:
 
       - name: Build web app
         env:
-          NEXT_PUBLIC_CITY: ${{ inputs.city }}
+          NEXT_PUBLIC_CITY: ${{ matrix.city }}
           EXPORT: 'true'
         run: npm run build
 
@@ -89,9 +106,9 @@ jobs:
 
       - name: Sync Capacitor
         env:
-          NEXT_PUBLIC_CITY: ${{ inputs.city }}
+          NEXT_PUBLIC_CITY: ${{ matrix.city }}
         run: |
-          npm run ios:cities
+          npm run sync:city
           npx cap sync ios
 
       - name: Write App Store Connect API key
@@ -118,16 +135,20 @@ jobs:
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           MATCH_READONLY: false
           CI: true
-          CITY: ${{ inputs.city }}
-          NEXT_PUBLIC_CITY: ${{ inputs.city }}
+          CITY: ${{ matrix.city }}
+          NEXT_PUBLIC_CITY: ${{ matrix.city }}
         run: |
           cd ios
           bundle exec fastlane beta
 
   publish-android:
-    needs: build-web
+    needs: [plan, build-web]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        city: ${{ fromJson(needs.plan.outputs.cities) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -150,7 +171,7 @@ jobs:
 
       - name: Build web app
         env:
-          NEXT_PUBLIC_CITY: ${{ inputs.city }}
+          NEXT_PUBLIC_CITY: ${{ matrix.city }}
           EXPORT: 'true'
         run: npm run build
 
@@ -174,9 +195,9 @@ jobs:
 
       - name: Sync Capacitor
         env:
-          NEXT_PUBLIC_CITY: ${{ inputs.city }}
+          NEXT_PUBLIC_CITY: ${{ matrix.city }}
         run: |
-          npm run ios:cities
+          npm run sync:city
           npx cap sync android
 
       - name: Decode Android keystore
@@ -202,11 +223,11 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.city }}-${{ inputs.version }}
+          TAG: ${{ matrix.city }}-${{ inputs.version }}
           AAB: android/app/build/outputs/bundle/release/app-release.aab
         run: |
           [ -f "$AAB" ] || exit 0
-          cp "$AAB" "${{ inputs.city }}-${{ inputs.version }}.aab"
+          cp "$AAB" "${{ matrix.city }}-${{ inputs.version }}.aab"
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
             || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "$TAG" --notes "city-digital ${{ inputs.sha }}"
-          gh release upload "$TAG" "${{ inputs.city }}-${{ inputs.version }}.aab" -R "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$TAG" "${{ matrix.city }}-${{ inputs.version }}.aab" -R "$GITHUB_REPOSITORY" --clobber
