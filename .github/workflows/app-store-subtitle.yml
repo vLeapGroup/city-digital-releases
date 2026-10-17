@@ -93,7 +93,17 @@ jobs:
             console.log(`version ${v.attributes?.versionString} state=${v.attributes?.appStoreState}`)
           }
           const draft = existing.find((v) => EDITABLE.has(v.attributes?.appStoreState))
-          if (!draft) {
+          const wantedVersion = (process.env.VERSION || '').trim()
+          if (draft && wantedVersion && draft.attributes?.versionString !== wantedVersion) {
+            console.log(`renaming draft ${draft.attributes?.versionString} → ${wantedVersion}`)
+            await api('PATCH', `/v1/appStoreVersions/${draft.id}`, {
+              data: {
+                type: 'appStoreVersions',
+                id: draft.id,
+                attributes: { versionString: wantedVersion },
+              },
+            })
+          } else if (!draft) {
             const taken = new Set(existing.map((v) => v.attributes?.versionString))
             let next = (process.env.VERSION || '').trim()
             if (!next || taken.has(next)) {
